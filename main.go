@@ -1,34 +1,119 @@
 package main
 
 import (
-	// "bufio"
-	// "encoding/binary"
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"os"
-	"reflect"
 )
 
-var ToC_Flag = map[int]string{
-  (1 << 1): "kTocMetaData",
-  (1 << 3): "kTocRawData",
-  (1 << 7): "kTocDAQmxRawData",
-  (1 << 5): "kTocInterleavedData",
-  (1 << 6): "kTocBigEndian",
-  (1 << 2): "kTocNewObjList",
+const(one = uint32(1))
+
+var ToC_Flag = map[uint32]string{
+  (1 << 2): "kTocNewObjList",       // 2
+  (1 << 3): "kTocRawData",          // 4
+  (1 << 5): "kTocInterleavedData",  // 8
+  (1 << 6): "kTocBigEndian",        // 32
+  (1 << 7): "kTocDAQmxRawData",     // 64
+  (1 << 1): "kTocMetaData",         // 128
 }
 
-type LeadIn struct{
+type Header struct{
   tag string
-  ToC string
-  version uint32
-  metaDataLoc uint64
-  rawDataLoc uint64
+  toc uint32
+  ver uint32
+  seg uint64
+  raw uint64
 }
 
-func main() {
+func (lI *Header) show(){
+  fmt.Printf("tag: %s\n", lI.tag)
+  fmt.Printf("toc: %v\n", lI.toc)
+  fmt.Printf("ver: %v\n", lI.ver)
+  fmt.Printf("seg: %v\n", lI.seg)
+  fmt.Printf("raw: %v\n", lI.raw)
+}
+
+func main(){
   fileName := "./test_files/2020-09-17T22-45-47_.tdms"
-  fmt.Println(reflect.TypeOf(readLoc(fileName, int64(4))))
+  f := loadFile(fileName)
+
+  H := Header{}
+  var loc int64
+
+  fmt.Println("Starting Loc: ", loc)
+  br := readSegmentHeader(f, &H)
+  H.show()
+  fmt.Println("Header End: ", int64(br)+loc)
+  loc, _ = f.Seek(int64(H.seg), 1)
+  fmt.Println("Starting Loc: ", loc)
+  br = readSegmentHeader(f, &H)
+  H.show()
+  fmt.Println("Header End: ", int64(br)+loc)
+  loc, _ = f.Seek(int64(H.seg), 1)
+  fmt.Println("Starting Loc: ", loc)
+  br = readSegmentHeader(f, &H)
+  H.show()
+  fmt.Println("Header End: ", int64(br)+loc)
+  loc, _ = f.Seek(int64(H.seg), 1)
+  fmt.Println("Starting Loc: ", loc)
+  br = readSegmentHeader(f, &H)
+  H.show()
+  fmt.Println("Header End: ", int64(br)+loc)
+  loc, _ = f.Seek(int64(H.seg), 1)
+
+  buf, _ := readNextBytes(f, 512)
+  fmt.Printf("\n[%v]", string(buf))
+  
+  defer f.Close()
+}
+
+func showMultipleHeaders(f *os.File, headerNum int){
+  header := Header{}
+  var loc int64
+  var bytesRead int
+  var end int64
+
+  for i := 0; i < headerNum; i++{
+    loc, _ = f.Seek(int64(header.seg), 1)
+    fmt.Println("-------------------------------")
+    fmt.Println("Segment Start: ", loc)
+    fmt.Println("-------------------------------")
+    bytesRead = readSegmentHeader(f, &header)
+    header.show()
+    end = loc + int64(bytesRead)
+    fmt.Println("-------------------------------")
+    fmt.Println("Header End: ", end)
+    fmt.Println("-------------------------------")
+  }
+}
+
+func readSegmentHeader(f *os.File, h *Header) int {
+  data, bytesRead := readNextBytes(f, 4)
+  h.tag = string(data)
+  data, bytesRead = readNextBytes(f, 24)
+  buffer := bytes.NewBuffer(data)
+  decodeBytes(buffer, &h.toc)
+  decodeBytes(buffer, &h.ver)
+  decodeBytes(buffer, &h.seg)
+  decodeBytes(buffer, &h.raw)
+  return bytesRead
+}
+
+func decodeBytes[T any](buffer *bytes.Buffer, field *T){
+  binary.Read(buffer, binary.LittleEndian, field)
+}
+
+func readNextBytes(file *os.File, number int) ([]byte, int) {
+	bytes := make([]byte, number)
+
+	bytesRead, err := file.Read(bytes)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return bytes, bytesRead
 }
 
 func loadFile(fileName string) *os.File{
@@ -39,66 +124,22 @@ func loadFile(fileName string) *os.File{
   return file
 }
 
-func readLoc(fileName string, loc int64) []byte {
-  f := loadFile(fileName)
-  f.Seek(loc, 0)
-  buf := make([]byte, 8)
-  rLen, err := f.ReadAt(buf, int64(loc))
-    if err != nil{
-      log.Fatalf("READ ERROR: %v", err)
-    }
-  return buf[:rLen]
-}
-
-func readLeadIn(fileName string) {
-  f := loadFile(fileName)
-  bufSize := 4
-  buf := make([]byte, bufSize)
-  for i := 0; i < 3; i++{
-    readTotal, err := f.Read(buf)
-    if err != nil{
-      log.Fatalf("READ ERROR: %v", err)
-    }
-    fmt.Printf("%x  %v\n", buf[:readTotal], string(buf[:readTotal]))
-  }
-  bufSize = 8
-  buf = make([]byte, bufSize)
-  for i := 0; i < 2; i++{
-    readTotal, err := f.Read(buf)
-    if err != nil{
-      log.Fatalf("READ ERROR: %v", err)
-    }
-    fmt.Printf("%x  %v\n", buf[:readTotal], string(buf[:readTotal]))
-  }
-  defer f.Close()
-
-}
-
-func readByChunk(fileName string, chunkSize int, numOfChunks int){
-  file, openErr := os.Open(fileName)
-  if openErr != nil{
-    log.Fatalf("Failed to open %v", fileName)
-  }
-  
-  defer file.Close()
-  buf := make([]byte, chunkSize)
-  for i := 0; i < numOfChunks; i++{
-    readTotal, readErr := file.Read(buf)
-    if readErr != nil{
-      log.Fatalf("READ ERROR: %v", readErr)
-    }
-    fmt.Printf("%x  %v\n", buf[:readTotal], string(buf[:readTotal]))
-  }
-}
-
-// func readByScanner(fileName string){
-//   file, openErr := os.Open(fileName)
-//   if openErr != nil{
-//     log.Fatalf("Failed to open %v", fileName)
-//   }
-//   defer file.Close()
+// func readLeadIn(f *os.File, lI *LeadIn){
+//   buf := make([]byte, 28)
 //
-//   scanner := bufio.NewScanner(file)
+//   _, err := f.Read(buf)
+//   if err != nil{
+//     fmt.Println(err)
+//   }
+//
+//   br := bytes.NewBuffer(buf)
 //   
-//   
+//   fmt.Printf("%v\n", string(buf[:4]))
+//   binary.Read(br, binary.LittleEndian, &lI.tag)
+//   binary.Read(br, binary.LittleEndian, &lI.toc)
+//   binary.Read(br, binary.LittleEndian, &lI.ver)
+//   binary.Read(br, binary.LittleEndian, &lI.seg)
+//   binary.Read(br, binary.LittleEndian, &lI.raw)
+//
 // }
+
