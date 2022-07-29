@@ -4,116 +4,167 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"tdms/common"
 )
 
-const(one = uint32(1))
+// 07 00 00 00: tdsTypeU32
+// 20 00 00 00: tdsTypeString
+// 03 00 00 00: tdsTypeI32
 
-var ToC_Flag = map[uint32]string{
-  (1 << 2): "kTocNewObjList",       // 2
-  (1 << 3): "kTocRawData",          // 4
-  (1 << 5): "kTocInterleavedData",  // 8
-  (1 << 6): "kTocBigEndian",        // 32
-  (1 << 7): "kTocDAQmxRawData",     // 64
-  (1 << 1): "kTocMetaData",         // 128
+type Property struct{
+  lenPropName uint32
+  Name string
+  Dtype uint32
+  LenValStr uint32
+  Value any
+}
+type Obj struct{
+  lenObjPath uint32
+  Name string
+  RawDataIndex uint32
+  NumOfProperties uint32
+  Properties []Property
+}
+type Segment struct{
+  Loc int
+  Header common.Header
+  NumOfObj uint32
+  Objs []Obj
+}
+type Segments []Segment
+
+func (s *Segments)Show(){
+  for _, v := range *s{
+    fmt.Printf("Segment Location: %v\n", v.Loc)
+    fmt.Printf("# of Objects: %v\n", v.NumOfObj)
+    for _, o := range v.Objs{
+      fmt.Printf("\tName: %v\n", o.Name)
+      fmt.Printf("\t\t# of Properties: %v\n", o.NumOfProperties)
+      for _, p := range o.Properties{
+        fmt.Printf("\t\t\t%v: %v\n", p.Name, p.Value)
+      }
+    } 
+  }
 }
 
-type Header struct{
-  tag string
-  toc uint32
-  ver uint32
-  seg uint64
-  raw uint64
+func (r *BytesReader) readSegment()Segment{
+  s := Segment{}
+  s.Loc = r.loc
+  r.readNext(4)
+  s.Header.Tag = r.str
+  r.readNext(4)
+  s.Header.Toc = r.i32
+  r.readNext(4)
+  s.Header.Ver = r.i32
+  r.readNext(8)
+  s.Header.Seg = r.i64
+  r.readNext(8)
+  s.Header.Raw = r.i64
+  // r.readNext(4)
+  // s.NumOfObj = r.i32
+  return s
 }
 
-func (lI *Header) show(){
-  fmt.Printf("tag: %s\n", lI.tag)
-  fmt.Printf("toc: %v\n", lI.toc)
-  fmt.Printf("ver: %v\n", lI.ver)
-  fmt.Printf("seg: %v\n", lI.seg)
-  fmt.Printf("raw: %v\n", lI.raw)
+func (r *BytesReader) readObj() Obj{
+  o := Obj{}
+  r.readNext(4)
+  o.lenObjPath = r.i32
+  r.readNext(int(o.lenObjPath))
+  o.Name = r.str
+  r.readNext(4)
+  o.RawDataIndex = r.i32
+  r.readNext(4)
+  o.NumOfProperties = r.i32
+  return o
+}
+
+func (r *BytesReader) readProperty() Property{
+  p := Property{}
+  r.readNext(4)
+  p.lenPropName = r.i32
+  r.readNext(int(p.lenPropName))
+  p.Name = r.str
+  r.readNext(4)
+  p.Dtype = r.i32
+
+  if p.Dtype == 32{
+    r.readNext(4)
+    p.LenValStr = r.i32
+    r.readNext(int(p.LenValStr))
+    p.Value = r.str
+  } else {
+    r.readNext(4)
+    p.Value = r.i32
+  }
+  return p
 }
 
 func main(){
   fileName := "./test_files/2020-09-17T22-45-47_.tdms"
-  f := loadFile(fileName)
 
-  H := Header{}
-  var loc int64
+  r := BytesReader{}
+  r.file = loadFile(fileName)
 
-  fmt.Println("Starting Loc: ", loc)
-  br := readSegmentHeader(f, &H)
-  H.show()
-  fmt.Println("Header End: ", int64(br)+loc)
-  loc, _ = f.Seek(int64(H.seg), 1)
-  fmt.Println("Starting Loc: ", loc)
-  br = readSegmentHeader(f, &H)
-  H.show()
-  fmt.Println("Header End: ", int64(br)+loc)
-  loc, _ = f.Seek(int64(H.seg), 1)
-  fmt.Println("Starting Loc: ", loc)
-  br = readSegmentHeader(f, &H)
-  H.show()
-  fmt.Println("Header End: ", int64(br)+loc)
-  loc, _ = f.Seek(int64(H.seg), 1)
-  fmt.Println("Starting Loc: ", loc)
-  br = readSegmentHeader(f, &H)
-  H.show()
-  fmt.Println("Header End: ", int64(br)+loc)
-  loc, _ = f.Seek(int64(H.seg), 1)
 
-  buf, _ := readNextBytes(f, 512)
-  fmt.Printf("\n[%v]", string(buf))
-  
-  defer f.Close()
+  h := common.Headers{}
+  getSegmentHeaders(fileName, &h)
+
+  for i:=0;i<5;i++{
+    fmt.Println(h[i])
+  }
+
+
+  defer r.file.Close()
 }
 
-func showMultipleHeaders(f *os.File, headerNum int){
-  header := Header{}
-  var loc int64
-  var bytesRead int
-  var end int64
+type BytesReader struct{
+  file *os.File
+  loc int
+  bytes []byte
+  i32 uint32
+  i64 uint64
+  str string
+}
 
-  for i := 0; i < headerNum; i++{
-    loc, _ = f.Seek(int64(header.seg), 1)
-    fmt.Println("-------------------------------")
-    fmt.Println("Segment Start: ", loc)
-    fmt.Println("-------------------------------")
-    bytesRead = readSegmentHeader(f, &header)
-    header.show()
-    end = loc + int64(bytesRead)
-    fmt.Println("-------------------------------")
-    fmt.Println("Header End: ", end)
-    fmt.Println("-------------------------------")
+func (b *BytesReader) readNext(numOfBytes int){
+  read := func() int {
+    bytesRead, err := b.file.Read(b.bytes)
+    if err != nil && err != io.EOF{
+      log.Fatal(err)
+    }
+    return bytesRead
+  }
+
+  if numOfBytes == 4{
+    b.i64 = 0
+    b.bytes = make([]byte, numOfBytes)
+    bytesRead := read()
+    b.str = string(b.bytes)
+    buf := bytes.NewBuffer(b.bytes)
+    binary.Read(buf, binary.LittleEndian, &b.i32)
+    b.loc += bytesRead
+  } else if numOfBytes == 8 {
+    b.i32 = 0
+    b.bytes = make([]byte, numOfBytes)
+    bytesRead := read()
+    b.str = string(b.bytes)
+    buf := bytes.NewBuffer(b.bytes)
+    binary.Read(buf, binary.LittleEndian, &b.i64)
+    b.loc += bytesRead
+  } else{
+    b.bytes = make([]byte, numOfBytes)
+    bytesRead := read()
+    b.str = string(b.bytes)
+    b.loc += bytesRead
   }
 }
 
-func readSegmentHeader(f *os.File, h *Header) int {
-  data, bytesRead := readNextBytes(f, 4)
-  h.tag = string(data)
-  data, bytesRead = readNextBytes(f, 24)
-  buffer := bytes.NewBuffer(data)
-  decodeBytes(buffer, &h.toc)
-  decodeBytes(buffer, &h.ver)
-  decodeBytes(buffer, &h.seg)
-  decodeBytes(buffer, &h.raw)
-  return bytesRead
-}
-
-func decodeBytes[T any](buffer *bytes.Buffer, field *T){
-  binary.Read(buffer, binary.LittleEndian, field)
-}
-
-func readNextBytes(file *os.File, number int) ([]byte, int) {
-	bytes := make([]byte, number)
-
-	bytesRead, err := file.Read(bytes)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	return bytes, bytesRead
+func (b *BytesReader) printNext(numOfBytes int){
+  b.readNext(numOfBytes)
+  fmt.Printf("%v|%X|%v|%v|%v|\n",b.loc, b.bytes, b.i32, b.i64, b.str)
 }
 
 func loadFile(fileName string) *os.File{
@@ -123,23 +174,66 @@ func loadFile(fileName string) *os.File{
   }
   return file
 }
+// ---------------------------------------------------------------------------
+type Window struct{
+  start int
+  end int
+}
 
-// func readLeadIn(f *os.File, lI *LeadIn){
-//   buf := make([]byte, 28)
-//
-//   _, err := f.Read(buf)
-//   if err != nil{
-//     fmt.Println(err)
-//   }
-//
-//   br := bytes.NewBuffer(buf)
-//   
-//   fmt.Printf("%v\n", string(buf[:4]))
-//   binary.Read(br, binary.LittleEndian, &lI.tag)
-//   binary.Read(br, binary.LittleEndian, &lI.toc)
-//   binary.Read(br, binary.LittleEndian, &lI.ver)
-//   binary.Read(br, binary.LittleEndian, &lI.seg)
-//   binary.Read(br, binary.LittleEndian, &lI.raw)
-//
-// }
+func (w *Window) Move(size int){
+  w.start = w.end
+  w.end += size
+}
 
+func decodeBytes[T any](data []byte, field *T){
+  buffer := bytes.NewBuffer(data)
+  binary.Read(buffer, binary.LittleEndian, field)
+}
+
+func decodeBytesWithBuf[T any](buffer *bytes.Buffer, field *T){
+  binary.Read(buffer, binary.LittleEndian, field)
+}
+
+
+func readNextBytes(file *os.File, number int) ([]byte, int, error) {
+	bytes := make([]byte, number)
+
+	bytesRead, err := file.Read(bytes)
+	if err != nil && err != io.EOF {
+    log.Fatal(err)
+	}
+
+	return bytes, bytesRead, err
+}
+
+func getSegmentHeaders(fileName string, headers *common.Headers){
+  f := loadFile(fileName)
+  fileStats, _ := f.Stat()
+  fileSize := fileStats.Size()
+  fmt.Printf("fileSize: %v\n", fileSize)
+
+  h := common.Header{}
+  var loc int64
+  var data []byte
+  var err error
+ 
+  // for loc < fileSize{
+  for {
+    loc, _ = f.Seek(int64(h.Seg), 1)
+    h.Loc = loc
+    data, _, err = readNextBytes(f, 4)
+    if err == io.EOF{break}
+    h.Tag = string(data)
+    data, _, err = readNextBytes(f, 24)
+    if err == io.EOF{break}
+    buffer := bytes.NewBuffer(data)
+    decodeBytesWithBuf(buffer, &h.Toc)
+    decodeBytesWithBuf(buffer, &h.Ver)
+    decodeBytesWithBuf(buffer, &h.Seg)
+    decodeBytesWithBuf(buffer, &h.Raw)
+    *headers = append(*headers, h)
+  }
+  fmt.Printf("Num of Segment Headers: %v\n", len(*headers))
+
+  defer f.Close()
+}
