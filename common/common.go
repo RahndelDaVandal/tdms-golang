@@ -2,43 +2,40 @@ package common
 
 import "fmt"
 
-
-var ToC_Flag = map[uint32]string{
-  (1 << 2): "kTocNewObjList",       // 2
-  (1 << 3): "kTocRawData",          // 4
-  (1 << 5): "kTocInterleavedData",  // 8
-  (1 << 6): "kTocBigEndian",        // 32
-  (1 << 7): "kTocDAQmxRawData",     // 64
-  (1 << 1): "kTocMetaData",         // 128
-}
-
-// TODO - Set up structs to house segment info
-// Something like this maybe?
-// TDMS_File{[]Segment{Header, Meta, Raw}}
-type ObjProperty struct{
-  LenName uint32
+type Property struct{
+  LenPropName uint32
   Name string
   Dtype uint32
-  value any // will have to make a generic or interface
-
+  LenValStr uint32
+  Value any
 }
-
-type ObjProperties []ObjProperty
-
-type SegObj struct{
+type Obj struct{
   LenObjPath uint32
-  ObjName string
-  RawIndex uint32
+  Name string
+  RawDataIndex uint32
   NumOfProperties uint32
-  Properties []ObjProperties
-
+  Properties []Property
 }
-
-type SegObjs []SegObj
-
 type Segment struct{
-  numOfObj uint32
-  Objs SegObjs
+  Loc int
+  Header Header
+  NumOfObj uint32
+  Objs []Obj
+}
+type Segments []Segment
+
+func (s *Segments)Show(){
+  for _, v := range *s{
+    fmt.Printf("Segment Location: %v\n", v.Loc)
+    fmt.Printf("# of Objects: %v\n", v.NumOfObj)
+    for _, o := range v.Objs{
+      fmt.Printf("\tName: %v\n", o.Name)
+      fmt.Printf("\t\t# of Properties: %v\n", o.NumOfProperties)
+      for _, p := range o.Properties{
+        fmt.Printf("\t\t\t%v: %v\n", p.Name, p.Value)
+      }
+    } 
+  }
 }
 
 type Headers []Header
@@ -61,3 +58,11 @@ func (lI *Header) Show(){
   fmt.Printf("raw: %v\n", lI.Raw)
 }
 
+var ToC_Flag = map[uint32]string{
+  (1 << 2): "kTocNewObjList",       // 2
+  (1 << 3): "kTocRawData",          // 4
+  (1 << 5): "kTocInterleavedData",  // 8
+  (1 << 6): "kTocBigEndian",        // 32
+  (1 << 7): "kTocDAQmxRawData",     // 64
+  (1 << 1): "kTocMetaData",         // 128
+}
